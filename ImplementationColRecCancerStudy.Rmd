@@ -1,0 +1,1485 @@
+---
+title: "ImplementationColRecCancer"
+author: "Julian Gruendner"
+date: "1 Februar 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r build all Models}
+
+source("DataPreparation.R")
+source("trainingModels.R")
+source("testAndEvaluate.R")
+source("plotResults.R")
+seed <-7
+genPrep()
+
+dataFile <- "data/2017-01-09_polyprobe_data_all.csv"
+data <- read.csv(dataFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+configFile <- "modelConfiguration.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+## basic data changes
+data$DFS_Event <- sapply(data$DFS_Event, function(x) { ifelse(x == "1 (yes)", TRUE, FALSE)})
+data$patient_lebensstatus <- sapply(data$patient_lebensstatus, function(x) { ifelse(x == "2 (dead)", TRUE, FALSE)})
+data <- createRiskGroupingCols(data)
+
+
+```
+
+
+```{R - split data }
+# call this only once after entering new data
+seed <- 7
+  splitData <- splitData(seed, data)
+  trainingData<-splitData$training
+  testData <- splitData$test
+  
+  fileTrain <- "data/inputData/training_all.csv"
+  fileTest <- "data/inputData/test_all.csv"
+  createInputCsv(trainingData, fileTrain)
+  createInputCsv(testData, fileTest)
+  
+  
+  # split data for fs
+  seed <- 7
+  splitData <- splitDataFs(seed, data)
+  trainingData<-splitData$training
+  testData <- splitData$test
+  fsData <- splitData$fs
+  fileTrain <- "data/inputData/fs_training_all.csv"
+  fileTest <- "data/inputData/fs_test_all.csv"
+  fileFs <- "data/inputData/fs_fs_all.csv"
+  createInputCsv(trainingData, fileTrain)
+  createInputCsv(testData, fileTest)
+  createInputCsv(fsData, fileFs)
+
+
+```
+
+
+```{r build all files for experiments}
+#build Data files   - commend in to build data files
+seed <- 7
+genPrep(seed)
+experimentsToRun <- c(0)
+buildDataFilesNoFeatureSelection(myConfig, experimentsToRun)
+
+# build files for feature selection
+configFile <- "modelConfigurationFeatureSelection.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+experimentsToRun <- c(0)
+buildDataFilesForFeatureSelection(myConfig, experimentsToRun)
+
+#build datafiles after fs has happened to run those experiments
+experimentsToRun <- c(74)
+buildDataFilesForFeatureSelection(myConfig, experimentsToRun)
+
+
+experimentsToRun <- c(50)
+changeDataFilePostFeatureSelection(myConfig, experimentsToRun)
+
+
+```
+
+
+```{r  whole data setfeature selection}
+
+configFile <- "modelConfigurationFeatureSelection.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+experimentsToRun <- c(5)
+for(i in experimentsToRun){
+  seed <- 7
+  genPrep(seed)
+  modelConfig <- myConfig[5,] 
+  
+  if(i == "2" || i == "3") {
+    colsToIgnore <- c("disease_free_survival_time","DFS_Event", "patient_ueberlebenszeit", "patient_lebensstatus")
+  } else {
+    colsToIgnore <- c("")
+  }
+  
+  dataForFeatureSelection <- prepDataForFeatureSelection(data, colsToIgnore)
+  
+  
+  training <- call_dcf_function(dataForFeatureSelection[[1]], paste(modelConfig$DataChangeFunction))
+  test <- call_dcf_function(dataForFeatureSelection[[2]], paste(modelConfig$DataChangeFunction))
+  featureSelection <- call_dcf_function(dataForFeatureSelection[[3]], paste(modelConfig$DataChangeFunction))
+  
+  expNumber <- modelConfig$ExpNumber
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  seed <- 7
+  dataForFeatureSelection <- removeHighlyCorrelatedFs(featureSelection, test,training, seed, outcomeVar)
+  
+  
+  featureSelection <- dataForFeatureSelection[[1]]
+  training <- dataForFeatureSelection[[2]]
+  test <- dataForFeatureSelection[[3]]
+  
+  fileToSave <- ""
+  fileToSave <- paste(modelConfig$inputFile)
+  fileToSave <- paste("data/inputData/", fileToSave, sep="", collapse="")
+  
+  fileToSaveTrain <- paste(fileToSave,"_train.csv", sep="", collapse="")
+  fileToSaveTest <- paste(fileToSave,"_test.csv", sep="", collapse="")
+  fileToSaveFs <- paste(fileToSave,"_featureSelection.csv", sep="", collapse="")
+  createInputCsv(training, fileToSaveTrain)
+  createInputCsv(test, fileToSaveTest)
+  createInputCsv(featureSelection, fileToSaveFs)
+  
+  
+  
+  #outcomeVec <- featureSelection[,outcomeVar]
+  
+  if(packType == "caret"){
+    seed <- 7
+    set.seed(seed)
+    for(outcomeColName in outcomeVar){
+      featuresToTest <-  subset(featureSelection, select = -eval(parse(text=outcomeColName)))
+    }
+    
+    # filterCtrl <- sbfControl(functions = rfSBF, method = "repeatedcv", repeats = 5)
+    # fsSel <- droplevels(featureSelection)
+    # rfWithFilter <- sbf(featuresToTest, fsSel[,outcomeVar], sbfControl = filterCtrl)
+    
+    
+    control <- trainControl(method="repeatedcv", number=10, repeats=3)
+    # train the model
+    form <- as.formula(paste(c(outcomeVar, "~."), collapse=""))
+    model <- caret::train(form, data=featureSelection, method="rf", trControl=control)
+    # estimate variable importance
+    importanceDf <- varImp(model, scale=FALSE)
+    fvData <- importanceDf$importance
+    rownamesTmp <- rownames(fvData)
+    fvData$model <- rownamesTmp
+    fvData <- fvData[order(-fvData[,c("Overall")]) , ]
+    fileToSave <- paste("data/featureSelection/exp",expNumber,"_featuresSelected.csv",sep = "", collapse = NULL)
+    write.table(fvData, fileToSave, sep = ";", quote = TRUE, dec = ".", row.names = FALSE)
+    
+    
+    # control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+    # # run the RFE algorithm
+    # fsSel <- droplevels(featureSelection)
+    # 
+    # results <- rfe(featuresToTest, fsSel[,outcomeVar], sizes=c(10,20,50), rfeControl=control)
+    # 
+    # fileToSave <- paste("data/featureSelection/exp",expNumber,"_featuresSelected.csv",sep = "", collapse = NULL)
+    # write.table(rownames(results$fit$importance), fileToSave, sep = ";", quote = TRUE, dec = ".", row.names = FALSE)
+    
+  }else if (packType == "mlr"){
+    
+    fsTask = makeSurvTask(data = featureSelection, target = outcomeVar)
+    fv = generateFilterValuesData(fsTask, method = "rf.importance")
+    fvData <- fv$data
+    fvData <- fvData[order(-fvData[,c("rf.importance")]) ,]
+    fileToSave <- paste("data/featureSelection/exp",expNumber,"_featuresSelected.csv",sep = "", collapse = NULL)
+    write.table(fvData, fileToSave, sep = ";", quote = TRUE, dec = ".", row.names = FALSE)
+    
+    
+    # ctrl = makeFeatSelControlRandom(maxit = 20L)
+    # ctrl = makeFeatSelControlSequential(method = "sfs", alpha = 0.02)
+    # rdesc = makeResampleDesc("Holdout")
+    # ("RepCV", reps = 10)
+    # fsTask = makeSurvTask(data = featureSelection, target = outcomeVar)
+    # 
+    # sfeatsSelected = mlr::selectFeatures(learner = "surv.randomForestSRC", task = fsTask, resampling = rdesc,control = ctrl, show.info =FALSE)
+    # 
+    # fileToSave <- paste("data/featureSelection/exp",expNumber,"_featuresSelected.csv",sep = "", collapse = NULL)
+    # write.table(sfeatsSelected$x, fileToSave, sep = ";", quote = TRUE, dec = ".", row.names = FALSE)
+  }
+  
+}
+
+
+```
+
+
+```{r  feature selection logically picked}
+
+configFile <- "modelConfigurationFeatureSelection.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+experimentsToRun <- c(16)
+for(i in experimentsToRun){
+  seed <- 7
+  genPrep(seed)
+  modelConfig <- myConfig[i,] 
+  
+
+  file <- paste("data/inputData/",modelConfig$inputFile, sep="",collapse = "")
+  
+  fileTraining <- paste(file, "_train.csv", sep="",collapse = "")
+  fileTest <- paste(file, "_test.csv", sep="",collapse = "")
+  fileFs <- paste(file, "_featureSelection.csv", sep="",collapse = "")
+  # read csv file and create dataframe from it
+  training <- read.csv(fileTraining, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  test <- read.csv(fileTest, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  featureSelection <- read.csv(fileFs, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  
+  
+  expNumber <- modelConfig$ExpNumber
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  seed <- 7
+  dataForFeatureSelection <- removeHighlyCorrelatedFs(featureSelection, test,training, seed, outcomeVar)
+  
+  
+  featureSelection <- dataForFeatureSelection[[1]]
+  training <- dataForFeatureSelection[[2]]
+  test <- dataForFeatureSelection[[3]]
+  
+  #outcomeVec <- featureSelection[,outcomeVar]
+  
+  if(packType == "caret"){
+    for(outcomeColName in outcomeVar){
+      featuresToTest <-  subset(featureSelection, select = -eval(parse(text=outcomeColName)))
+    }
+    
+    
+    
+    control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+    # run the RFE algorithm
+    fsSel <- droplevels(featureSelection)
+    
+    results <- rfe(featuresToTest, fsSel[,outcomeVar], sizes=c(10,20,50), rfeControl=control)
+    
+    fileToSave <- paste("data/featureSelection/exp",expNumber,"_featuresSelected.csv",sep = "", collapse = NULL)
+    write.table(rownames(results$fit$importance), fileToSave, sep = ";", quote = TRUE, dec = ".", row.names = FALSE)
+    
+  }else if (packType == "mlr"){
+    ctrl = makeFeatSelControlRandom(maxit = 20L)
+    #ctrl = makeFeatSelControlSequential(method = "sfs", alpha = 0.02)
+    rdesc = makeResampleDesc("Holdout")
+    #("RepCV", reps = 10) 
+    fsTask = makeSurvTask(data = featureSelection, target = outcomeVar)
+    
+    sfeatsSelected = mlr::selectFeatures(learner = "surv.randomForestSRC", task = fsTask, resampling = rdesc,control = ctrl, show.info = FALSE)
+    
+    fileToSave <- paste("data/featureSelection/exp",expNumber,"_featuresSelected.csv",sep = "", collapse = NULL)
+    write.table(sfeatsSelected$x, fileToSave, sep = ";", quote = TRUE, dec = ".", row.names = FALSE)
+  }
+  
+}
+
+
+```
+
+
+``` {R select best models and print}
+
+dataFile <- "data/overallResults.csv"
+overallResults <- read.csv(dataFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+
+
+
+predictionGroups <- unique(overallResults$expPredictionGroup)
+bestExperiments <- data.frame()
+for(curPredGroup in predictionGroups){
+
+  curResults <- overallResults[overallResults$expPredictionGroup %in% curPredGroup, ]
+  curTrainResults <- curResults[curResults$dataSetCol %in% "training", ]
+  curTestResults <- curResults[curResults$dataSetCol %in% "test", ]
+  curTestResults <- curTestResults[order(-curTestResults[,c("Accuracy")]) , ]
+  curTestResults <- curTestResults[order(-curTestResults[,c("Cindex")]) , ]
+  
+  for(j in 1:nrow(curTestResults)){
+    curBestTestResult <- curTestResults[j,]
+    
+    trainResForCurBestTestRs <- curTrainResults[curTrainResults$expNumber %in% curBestTestResult$expNumber, ]
+    trainResForCurBestTestRs <- trainResForCurBestTestRs[trainResForCurBestTestRs$Model %in% curBestTestResult$Model,]
+    curtrainMet <- trainResForCurBestTestRs$Accuracy
+    curTestMet <- curBestTestResult$Accuracy
+    
+    if(is.na(curTestMet)){
+      curtrainMet <- trainResForCurBestTestRs$Cindex
+      curTestMet <- curBestTestResult$Cindex
+    }
+    
+    if(curtrainMet > curTestMet){
+      bestExperiments <- rbind(bestExperiments, curTrainResults[curTrainResults$expNumber %in% curBestTestResult$expNumber, ])
+      bestExperiments <- rbind(bestExperiments, curTestResults[curTestResults$expNumber %in% curBestTestResult$expNumber, ])
+      break;
+    }
+  }
+}
+fileToSave <- "data/bestExperiments.csv"
+createInputCsv(bestExperiments, fileToSave)
+
+```
+
+```{r  build and evaluate all models}
+# build and evaluate models
+experimentsToRun <- c(74)
+#experimentsToRun <- c(54:61)
+
+for(i in experimentsToRun){
+  seed <- 7
+  genPrep(seed)
+  modelConfig <- myConfig[74,]   
+  
+  expNumber <- modelConfig$ExpNumber
+  expPrediction <- modelConfig$prediction
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  expMetric <- paste(modelConfig$metric)
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  file <- paste("data/inputData/",modelConfig$inputFile, sep="",collapse = "")
+  
+  fileTraining <- paste(file, "_train.csv", sep="",collapse = "")
+  fileTest <- paste(file, "_test.csv", sep="",collapse = "")
+  
+  # read csv file and create dataframe from it
+  training <- read.csv(fileTraining, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  testData <- read.csv(fileTest, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  
+ 
+  for(colname in colnames(training)){
+    levels(testData[,c(colname)]) <- levels(training[, c(colname)])
+  }
+
+  if(packType == "caret" ) {
+  # train and evaluate caret models
+  #Begin Training and evaluating Caret Package type models
+  
+  
+  if(expMetric == "Accuracy") {
+  control <- trainControl(method="repeatedcv", number=10, repeats=10, sampling="down", savePredictions="all")
+  metric <- "Accuracy"
+  trainedModelsCaret <- trainModelsCaret(training, outcomeVar, metric, control)
+  modeltoSave <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  save(trainedModelsCaret,file = modeltoSave)
+  } else if(expMetric == "ROC") {
+    #training$DFS_Event <- sapply(training$DFS_Event, function(x) { ifelse(x == "1 - yes", "YES", "NO")})
+    #testData$DFS_Event <- sapply(testData$DFS_Event, function(x) { ifelse(x == "1 - yes", "YES", "NO")})
+    #training$DFS_Event <- as.factor(training$DFS_Event)
+    #testData$DFS_Event <- as.factor(testData$DFS_Event)
+    control <- trainControl(method="repeatedcv", number=10, repeats=10, sampling="down", savePredictions="all", classProbs = TRUE,    summaryFunction = twoClassSummary)
+    metric <- "ROC"
+  
+    trainedModelsCaret <- trainModelsCaret(training, outcomeVar, metric, control)
+    modeltoSave <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+    save(trainedModelsCaret,file = modeltoSave)
+    
+    # predictTrainCaretModels <- createPredictModels(training, trainedModelsCaret)
+    # predictTestCaretModels <- createPredictModels(testData, trainedModelsCaret)
+    # modelToAnalyse <- "knn"
+    # 
+    # curPredModelTrain <- predictTrainCaretModels[[modelToAnalyse]]
+    # curPredModelTest <- predictTestCaretModels[[modelToAnalyse]]
+    # 
+    #confMat <- confusionMatrix(curPredModelTrain, training[, c(outcomeVar)])
+    #confMat <- confusionMatrix(curPredModelTest, testData[, c(outcomeVar)], positive = "YES")
+    # 
+    # library(pROC)
+    # # Select a parameter setting
+    # #selectedIndices <- rfFit$pred$mtry == 2
+    # # Plot:
+    # #Draw the ROC curve 
+    # 
+    # curPredModel <- predict(trainedModelsCaret[[modelToAnalyse]], testData, type = "prob")
+    # 
+    # head(curPredModel)
+    # 
+    # gbm.ROC <- roc(predictor=curPredModel$YES,response=testData[, c(outcomeVar)], levels=rev(levels(testData[, c(outcomeVar)])))
+    # gbm.ROC$auc
+    # #Area under the curve: 0.8731
+    # plot(gbm.ROC,main="GBM ROC")
+  }
+  
+  
+  levels(testData$v971_1_mnppp01_31_op_hauptlokalisation) <- levels(training$v971_1_mnppp01_31_op_hauptlokalisation)
+  
+  predictTrainCaretModels <- createPredictModels(training, trainedModelsCaret)
+  predictTestCaretModels <- createPredictModels(testData, trainedModelsCaret)
+  
+  evalMetric <- "Accuracy"
+  evalCaretModelsTraining <- evalModelListsAccsDf(predictTrainCaretModels, training, outcomeVar, evalMetric = evalMetric)
+  
+  evalCaretModelsTest <- evalModelListsAccsDf(predictTestCaretModels, testData, outcomeVar, evalMetric = evalMetric)
+  # get and print plots
+  
+  expForSpecSens <- c(5,8,13,16,21,24,29,32,36,37,39,41,43,45,47,49,51,53,54,55,56,57,58,59, 60, 61,73,74,75)
+  if(expNumber %in% expForSpecSens ) {
+    print("getting Spec and Sens")
+    
+    modelSpecSensTrain <- getSensAndSpecForModels(predictTrainCaretModels, training, outcomeVar)
+    modelSpecSensTest <- getSensAndSpecForModels(predictTestCaretModels, testData, outcomeVar)
+    resultsCsvSpecSens <- "data/overallResultsSpecSens.csv"
+    addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTrain, expNumber, expName,"training", prediction = expPrediction )
+    addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTest,expNumber, expName,"test", prediction = expPrediction)
+    #confMatsCaret <- getConfMatrices(predictTestCaretModels, testData, outcomeVar, evalMetric = evalMetric)
+  }
+  
+  #resampleCaret <-resamples(trainedModelsCaret)
+  
+  getAndSaveEvalPlots(evalCaretModelsTraining, title="overall accuracy models training data", expName = expName)
+  getAndSaveEvalPlots(evalCaretModelsTest, title="overall accuracy models test data", expName = expName)
+  #getCompPlotForMetric(resampleCaret, metric = "Accuracy", packType = "caret", title = "Overall Accuracy Resampling", expName = expName)
+  
+  resultsCsv <- "data/overallResults.csv"
+  
+  addResultsToOverallResultsCsv(resultsCsv, evalCaretModelsTraining, expNumber, expName,"training", prediction = expPrediction )
+  addResultsToOverallResultsCsv(resultsCsv, evalCaretModelsTest,expNumber, expName,"test", prediction = expPrediction)
+
+  
+  
+  
+  } else if (packType == "mlr"){
+  
+  # train and evaluate mlr (survival) models
+  # Begin Training and evaluating mlr Package type models
+  
+  measures <- list(cindex)
+  trainedModelsMlr <- trainModelsMlr(training, outcomeVar, measures)
+  
+  
+  modeltoSave <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  save(trainedModelsMlr,file = modeltoSave)
+  
+  predictTrainMlrModels <- createPredictModels(training,trainedModelsMlr, packType = "mlr")
+  predictTestMlrModels <- createPredictModels(testData, trainedModelsMlr,packType = "mlr" )
+  
+  evalMetric <- cindex
+  
+  source("testAndEvaluate.R")
+  evalMlrModelsTraining <- evalModelListsAccsDf(predictTrainMlrModels, training, packType = "mlr", evalMetric = evalMetric)
+  
+  evalMlrModelsTest <- evalModelListsAccsDf(predictTestMlrModels, testData, packType = "mlr", evalMetric = evalMetric)
+  
+  resultsCsv <- "data/overallResults.csv"
+  addResultsToOverallResultsCsv(resultsCsv, evalMlrModelsTraining, expNumber, expName,"training", evalMetric = "cindex", prediction = expPrediction)
+  addResultsToOverallResultsCsv(resultsCsv, evalMlrModelsTest,expNumber, expName,"test", evalMetric = "cindex", prediction = expPrediction)
+  
+  getAndSaveEvalPlots(evalMlrModelsTraining, title="overall cindex models training data", expName = expName, metric = "Cindex")
+  getAndSaveEvalPlots(evalMlrModelsTest, title="overall cindex models test data", expName = expName, metric = "Cindex")
+  
+  # draw survival curves for groups
+  } 
+  
+  
+
+}
+
+```
+
+
+```{r analyse models built }
+
+# build and evaluate models
+experimentsToRun <- c(70:75)
+#experimentsToRun <- c(54:61)
+
+for(i in experimentsToRun){
+  seed <- 7
+  genPrep(seed)
+  modelConfig <- myConfig[74,]   
+  
+  expNumber <- modelConfig$ExpNumber
+  expPrediction <- modelConfig$prediction
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  expMetric <- paste(modelConfig$metric)
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  file <- paste("data/inputData/",modelConfig$inputFile, sep="",collapse = "")
+  
+  fileTraining <- paste(file, "_train.csv", sep="",collapse = "")
+  fileTest <- paste(file, "_test.csv", sep="",collapse = "")
+  
+  # read csv file and create dataframe from it
+  training <- read.csv(fileTraining, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  testData <- read.csv(fileTest, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  
+ 
+  for(colname in colnames(training)){
+    levels(testData[,c(colname)]) <- levels(training[, c(colname)])
+  }
+  
+  modeltoLoad <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  load(modeltoLoad)
+  
+  if(packType == "caret" ) {
+  # train and evaluate caret models
+  #Begin Training and evaluating Caret Package type models
+    
+    # predictTrainCaretModels <- createPredictModels(training, trainedModelsCaret)
+    # predictTestCaretModels <- createPredictModels(testData, trainedModelsCaret)
+    # modelToAnalyse <- "knn"
+    # 
+    # curPredModelTrain <- predictTrainCaretModels[[modelToAnalyse]]
+    # curPredModelTest <- predictTestCaretModels[[modelToAnalyse]]
+    # 
+    #confMat <- confusionMatrix(curPredModelTrain, training[, c(outcomeVar)])
+    #confMat <- confusionMatrix(curPredModelTest, testData[, c(outcomeVar)], positive = "YES")
+    # 
+    # library(pROC)
+    # # Select a parameter setting
+    # #selectedIndices <- rfFit$pred$mtry == 2
+    # # Plot:
+    # #Draw the ROC curve 
+    # 
+    # curPredModel <- predict(trainedModelsCaret[[modelToAnalyse]], testData, type = "prob")
+    # 
+    # head(curPredModel)
+    # 
+    # gbm.ROC <- roc(predictor=curPredModel$YES,response=testData[, c(outcomeVar)], levels=rev(levels(testData[, c(outcomeVar)])))
+    # gbm.ROC$auc
+    # #Area under the curve: 0.8731
+    # plot(gbm.ROC,main="GBM ROC")
+
+  
+  
+  levels(testData$v971_1_mnppp01_31_op_hauptlokalisation) <- levels(training$v971_1_mnppp01_31_op_hauptlokalisation)
+  
+  predictTrainCaretModels <- createPredictModels(training, trainedModelsCaret)
+  predictTestCaretModels <- createPredictModels(testData, trainedModelsCaret)
+  
+  evalMetric <- "Accuracy"
+  evalCaretModelsTraining <- evalModelListsAccsDf(predictTrainCaretModels, training, outcomeVar, evalMetric = evalMetric)
+  
+  evalCaretModelsTest <- evalModelListsAccsDf(predictTestCaretModels, testData, outcomeVar, evalMetric = evalMetric)
+  # get and print plots
+  
+  expForSpecSens <- c(5,8,13,16,21,24,29,32,36,37,39,41,43,45,47,49,51,53,54,55,56,57,58,59, 60, 61)
+  if(expNumber %in% expForSpecSens ) {
+    print("getting Spec and Sens")
+    
+    modelSpecSensTrain <- getSensAndSpecForModels(predictTrainCaretModels, training, outcomeVar)
+    modelSpecSensTest <- getSensAndSpecForModels(predictTestCaretModels, testData, outcomeVar)
+    resultsCsvSpecSens <- "data/overallResultsSpecSens.csv"
+    addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTrain, expNumber, expName,"training", prediction = expPrediction )
+    addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTest,expNumber, expName,"test", prediction = expPrediction)
+    #confMatsCaret <- getConfMatrices(predictTestCaretModels, testData, outcomeVar, evalMetric = evalMetric)
+  }
+  
+  #resampleCaret <-resamples(trainedModelsCaret)
+  
+  getAndSaveEvalPlots(evalCaretModelsTraining, title="overall accuracy models training data", expName = expName)
+  getAndSaveEvalPlots(evalCaretModelsTest, title="overall accuracy models test data", expName = expName)
+  #getCompPlotForMetric(resampleCaret, metric = "Accuracy", packType = "caret", title = "Overall Accuracy Resampling", expName = expName)
+  
+  resultsCsv <- "data/overallResults.csv"
+  
+  addResultsToOverallResultsCsv(resultsCsv, evalCaretModelsTraining, expNumber, expName,"training", prediction = expPrediction )
+  addResultsToOverallResultsCsv(resultsCsv, evalCaretModelsTest,expNumber, expName,"test", prediction = expPrediction)
+
+  
+  
+  
+  } else if (packType == "mlr"){
+  
+  # train and evaluate mlr (survival) models
+  # Begin Training and evaluating mlr Package type models
+  
+  predictTrainMlrModels <- createPredictModels(training,trainedModelsMlr, packType = "mlr")
+  predictTestMlrModels <- createPredictModels(testData, trainedModelsMlr,packType = "mlr" )
+  
+  evalMetric <- cindex
+  
+  source("testAndEvaluate.R")
+  evalMlrModelsTraining <- evalModelListsAccsDf(predictTrainMlrModels, training, packType = "mlr", evalMetric = evalMetric)
+  
+  evalMlrModelsTest <- evalModelListsAccsDf(predictTestMlrModels, testData, packType = "mlr", evalMetric = evalMetric)
+  
+  resultsCsv <- "data/overallResults.csv"
+  addResultsToOverallResultsCsv(resultsCsv, evalMlrModelsTraining, expNumber, expName,"training", evalMetric = "cindex", prediction = expPrediction)
+  addResultsToOverallResultsCsv(resultsCsv, evalMlrModelsTest,expNumber, expName,"test", evalMetric = "cindex", prediction = expPrediction)
+  
+  getAndSaveEvalPlots(evalMlrModelsTraining, title="overall cindex models training data", expName = expName, metric = "Cindex")
+  getAndSaveEvalPlots(evalMlrModelsTest, title="overall cindex models test data", expName = expName, metric = "Cindex")
+  
+  # draw survival curves for groups
+  } 
+  
+  
+
+}
+
+
+```
+
+
+
+```{r analyse final models}
+
+experimentsToRun <- c(54:61)
+
+  seed <- 7
+  genPrep(seed)
+  
+  # best models are for approach 1 + 2 FS: 
+  # Tumor stage  25
+  # RCT TR YESNO 36
+  # relapse 37
+  # RG II 14
+  # RG SIII 7
+  # Relapse sII f14
+  # Relapse SIII 49   or 47 - take one with better ROC   -49 currently usend in write-up
+
+  # models to analyse FS approach 3
+  # f4b
+  # f1
+  # f5
+  
+  #70-75 = all data FS
+  modelConfig <- myConfig[37,]   
+  
+  expNumber <- modelConfig$ExpNumber
+  expPrediction <- modelConfig$prediction
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  file <- paste("data/inputData/",modelConfig$inputFile, sep="",collapse = "")
+  
+  fileTraining <- paste(file, "_train.csv", sep="",collapse = "")
+  fileTest <- paste(file, "_test.csv", sep="",collapse = "")
+  
+  # read csv file and create dataframe from it
+  training <- read.csv(fileTraining, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  testData <- read.csv(fileTest, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  #training$DFS_Event <- sapply(training$DFS_Event, function(x) { ifelse(x == "1 - yes", "YES", "NO")})
+  #testData$DFS_Event <- sapply(testData$DFS_Event, function(x) { ifelse(x == "1 - yes", "YES", "NO")})
+ 
+  for(colname in colnames(training)){
+    print(colname)
+    levels(testData[,c(colname)]) <- levels(training[, c(colname)])
+  }
+  
+  #if(packType == "caret" ) {
+  # train and evaluate caret models
+  #Begin Training and evaluating Caret Package type models
+  
+  modelsToLoad <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  load(modelsToLoad)
+ 
+  
+  impVars <- varImp(trainedModelsCaret$glmnet)
+
+
+  # control <- trainControl(method="repeatedcv", number=10, repeats=10, sampling="down", savePredictions="all", classProbs = TRUE, summaryFunction = twoClassSummary)
+ #  metric <- "ROC"
+  # trainedModelsCaret <- trainModelsCaret(training, outcomeVar, metric, control)
+  
+  #test <- varImp(trainedModelsCaret$rf, scale = TRUE)
+  #test
+  
+  #plot(test, top=50)
+  
+  predictTrainCaretModels <- createPredictModels(training, trainedModelsCaret)
+  predictTestCaretModels <- createPredictModels(testData, trainedModelsCaret)
+  
+  modelToAnalyse <- "glmnet"
+  
+  curPredModelTrain <- predictTrainCaretModels[[modelToAnalyse]]
+  curPredModelTest <- predictTestCaretModels[[modelToAnalyse]]
+  
+  confMat <- confusionMatrix(curPredModelTrain, training[, c(outcomeVar)])
+  confMat <- confusionMatrix(curPredModelTest, testData[, c(outcomeVar),], positive = "YES")
+  confMat
+  
+  evalMetric <- "Accuracy"
+  evalCaretModelsTraining <- evalModelListsAccsDf(predictTrainCaretModels, training, outcomeVar, evalMetric = evalMetric)
+  
+  evalCaretModelsTest <- evalModelListsAccsDf(predictTestCaretModels, testData, outcomeVar, evalMetric = evalMetric)
+
+  
+   modelSpecSensTrain <- getSensAndSpecForModels(predictTrainCaretModels, training, outcomeVar)
+   modelSpecSensTest <- getSensAndSpecForModels(predictTestCaretModels, testData, outcomeVar)
+  #confMatsCaret <- getConfMatrices(predictTestCaretModels, testData, outcomeVar, evalMetric = evalMetric)
+
+  resultsCsvSpecSens <- "data/overallResultsSpecSens.csv"
+  addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTrain, expNumber, expName,"training", prediction = expPrediction )
+  addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTest,expNumber, expName,"test", prediction = expPrediction)
+  
+  
+  
+  
+  
+  
+  library(pROC)
+  # Select a parameter setting
+  #selectedIndices <- rfFit$pred$mtry == 2
+  # Plot:
+  #Draw the ROC curve 
+  training$DFS_Event <- sapply(training$DFS_Event, function(x) { ifelse(x == "1 - yes", "YES", "NO")})
+  testData$DFS_Event <- sapply(testData$DFS_Event, function(x) { ifelse(x == "1 - yes", "YES", "NO")})
+  gbm.tune <- trainedModelsCaret$glmnet
+  
+  curPredModel <- predict(trainedModelsCaret$dt, testData, type = "prob")
+  
+  head(curPredModel)
+ 
+  gbm.ROC <- roc(predictor=curPredModel$YES,response=testData[, c(outcomeVar)], levels=rev(levels(testData[, c(outcomeVar)])))
+  gbm.ROC$auc
+  #Area under the curve: 0.8731
+  plot(gbm.ROC,main="GBM ROC")
+  
+  
+  
+  
+
+  
+  
+  
+  
+  
+  # train and evaluate mlr (survival) models
+  # Begin Training and evaluating mlr Package type models
+  
+  measures <- list(cindex)
+  
+  modelsToLoad <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  load(modelsToLoad)
+
+  
+  predictTrainMlrModels <- createPredictModels(training,trainedModelsMlr, packType = "mlr")
+  predictTestMlrModels <- createPredictModels(testData, trainedModelsMlr,packType = "mlr" )
+  
+  evalMetric <- cindex
+  
+  source("testAndEvaluate.R")
+  evalMlrModelsTraining <- evalModelListsAccsDf(predictTrainMlrModels, training, packType = "mlr", evalMetric = evalMetric)
+  
+  evalMlrModelsTest <- evalModelListsAccsDf(predictTestMlrModels, testData, packType = "mlr", evalMetric = evalMetric)
+
+  
+  # draw survival curves for groups
+
+  
+
+
+
+
+
+```
+
+
+``` {r load best model for risk prediction and group}
+
+# models to test:
+# f14 and 39 and 54, 55, 41 for relapse stage II
+# 61 knn, 53 glmnet
+
+
+
+
+configFile <- "configForGrouping.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+seed <- 7
+genPrep(seed)
+experimentsToRun <- c(1:2)
+
+modelConfig <- myConfig[1,]
+testData <- "_test"
+testData <- ""
+fileToLoad <- paste("data/inputData/", modelConfig$inputFile,testData,".csv", sep="", collapse="")
+curData <- read.csv(fileToLoad, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+# for(i in experimentsToRun) {
+#   
+#   
+#   
+#   modelConfig <- myConfig[45,]
+#   fileToSave <- ""
+#   fileToSave <- paste(modelConfig$inputFile)
+#   colsToSelect <- grepl("inputVar", colnames(modelConfig))
+#   colsToSelect <- modelConfig[,colsToSelect]
+#   colsToSelect <- sapply(colsToSelect, function(x) { as.character(x)})
+#   colsToSelect <- unname(colsToSelect)
+#   colsToSelect <- colsToSelect[! colsToSelect %in% c("", NA)]
+#   
+#   fileToSave <- paste("data/inputData/", fileToSave, sep="", collapse="")
+#   
+#   #filter data according to config
+#   filtColRect <- paste(modelConfig$filter_colRec)
+#   filtNeoCt <- paste(modelConfig$filter_neoCT)
+#   filtStage <- paste(modelConfig$filter_stage)
+#   curData <- filterbyGroups(data, neoCT = filtNeoCt, colRec = filtColRect, stage = filtStage)
+#   allData <- curData
+#   
+#   curData <- curData[colsToSelect]
+#   curData <- call_dcf_function(curData, paste(modelConfig$DataChangeFunction))
+#   
+#   allNAValIndices <- which(is.na(curData), arr.ind=TRUE)
+#   allNAValIndicesDistinct <- unique(allNAValIndices[,'row'])
+#   curDataNaOmitted <- curData[-allNAValIndicesDistinct,]
+#   allDataSameAsCurDataOmitted<- allData[-allNAValIndicesDistinct,]
+#   
+#   source("DataPreparation.R")
+#   splitData <- splitData(seed, curData, allDataSameAsCurDataOmitted)
+#     
+#   training<-splitData$training
+#   testData <- splitData$test
+#   trainingAll<-splitData$training_all
+#   testDataAll <- splitData$test_all
+#     
+#   fileToSaveTrain <- paste(fileToSave,"_train.csv", sep="", collapse="")
+#   fileToSaveTest <- paste(fileToSave,"_test.csv", sep="", collapse="")
+#   createInputCsv(training, fileToSaveTrain)
+#   createInputCsv(testData, fileToSaveTest)
+#   
+#   fileToSaveTrainAll <- paste(fileToSave,"_train_all.csv", sep="", collapse="")
+#   fileToSaveTestAll <- paste(fileToSave,"_test_all.csv", sep="", collapse="")
+#   createInputCsv(training, fileToSaveTestAll)
+#   createInputCsv(testData, fileToSaveTestAll)
+#   
+#   fileToSave <- paste(fileToSave,".csv", sep="", collapse="")
+#   createInputCsv(curData, fileToSave)
+# }
+
+
+
+# models to test = 45 stage II and 49 stage III
+
+library(survival)
+library(survminer)
+
+
+seed <- 7
+genPrep(seed)
+
+#check dfs probability stage II according to IIRiskGroup
+modelConfig <- myConfig[45,]
+expNumber <- paste(modelConfig$ExpNumber)
+testData <- "_test_all"
+
+testData <- "all"
+
+train <- paste("data/inputData/", "training_all",".csv", sep="", collapse="")
+test <- paste("data/inputData/","test_all",".csv", sep="", collapse="")
+train <- read.csv(train, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+test <- read.csv(test, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+
+
+
+curData <- rbind(train,test)
+
+curData <- filterForDeathByCancer(curData)
+curData <- filterbyGroups(curData, stage = "II")
+
+#fileToLoad <- paste("data/inputData/", modelConfig$inputFile,testData,".csv", sep="", collapse="")
+# curData <- read.csv(fileToLoad, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+modelToLoad <- paste("trainedModels/modelList_", modelConfig$inputFile, sep="", collapse="") 
+load(modelToLoad)
+modelToTest <- trainedModelsCaret$glmnet
+
+#modelConfig <- myConfig[1,]
+  prediction <- predict(modelToTest, curData)
+
+
+  # dataRiskGroupII <- curData
+  # vec <- ! dataRiskGroupII$IIRiskGroup %in% c("", "NA")
+  # dataRiskGroupII <- dataRiskGroupII[vec,]
+  # dataRiskGroupII$IIRiskGroup <- as.factor(dataRiskGroupII$IIRiskGroup)
+  
+  dataRiskGroupII <- curData
+  #dataRiskGroupII$DFS_Event <- sapply(curData$DFS_Event, function(x) { ifelse(x == "1 - yes", TRUE, FALSE)})
+  dataRiskGroupII <- dataRiskGroupII[,names(dataRiskGroupII) %in% c('disease_free_survival_time', 'DFS_Event','IIRiskGroup')]
+  prediction <- predict(modelToTest, curData)
+  dataRiskGroupII <- na.omit(dataRiskGroupII)
+  
+  
+  
+
+  #dataRiskGroupII <- dataRiskGroupII[order(dataRiskGroupII[,c("IIRiskGroup")], decreasing = TRUE), ]
+
+  
+  
+  SurvObject <- with(dataRiskGroupII, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ IIRiskGroup,
+                           data = dataRiskGroupII)
+  
+  
+  survDiff_II_dfs <- survdiff(SurvObject ~ IIRiskGroup, data = dataRiskGroupII)
+  
+  ggsurvplot(fit, conf.int = TRUE,title = "This is a test",legend.title = "relapse group: ", legend.labs = c("HR (high risk group)", "LR (low risk group)"), palette = c("#ca1e1e", "#8eabfd"))
+  picPrefix <- paste("stageII_surv_plot_dfs_exp_", expNumber, sep="", collapse="") 
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/comparison/",picPrefix,"_",title,testData,".png",sep=""))
+
+
+  
+  colsToSelect <- grepl("inputVar", colnames(modelConfig))
+  colsToSelect <- modelConfig[,colsToSelect]
+  colsToSelect <- sapply(colsToSelect, function(x) { as.character(x)})
+  colsToSelect <- unname(colsToSelect)
+  colsToSelect <- colsToSelect[! colsToSelect %in% c("", NA)]
+  tmpDataForIndices <- curData[, colsToSelect]
+  
+  allNAValIndices <- which(is.na(tmpDataForIndices), arr.ind=TRUE)
+  allNAValIndicesDistinct <- unique(allNAValIndices[,'row'])
+  curData <- curData[-allNAValIndicesDistinct,]
+  
+  
+  #check dfs probability stage II according to Model
+  dataRiskGroupII <- curData
+  # vec <- ! dataRiskGroupII$IIRiskGroup %in% c("", "NA")
+  # dataRiskGroupII <- dataRiskGroupII[vec,]
+  # dataRiskGroupII$IIRiskGroup <- as.factor(dataRiskGroupII$IIRiskGroup)
+  prediction <- predict(modelToTest, dataRiskGroupII)
+  dataRiskGroupII$relapsePrediction <- prediction
+  #dataRiskGroupII <- curData
+  #dataRiskGroupII$DFS_Event <- sapply(curData$DFS_Event, function(x) { ifelse(x == "1 - yes", TRUE, FALSE)})
+  dataRiskGroupII <- dataRiskGroupII[,names(dataRiskGroupII) %in% c('disease_free_survival_time', 'DFS_Event', 'relapsePrediction')]
+  
+
+  
+  
+  
+  dataRiskGroupII <- na.omit(dataRiskGroupII)
+  
+  SurvObject <- with(dataRiskGroupII, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ relapsePrediction,
+                           data = dataRiskGroupII)
+  
+  
+  survDiff_II_dfs <- survdiff(SurvObject ~ relapsePrediction, data = dataRiskGroupII)
+  
+  ggsurvplot(fit, conf.int = TRUE,legend.title = "relapse group: ", legend.labs = c("relapse = No", "reslapse = Yes"),palette = c("#8eabfd", "#ca1e1e") )
+
+  picPrefix <- paste("stageII_surv_plot_dfs_predGrouping_exp_", expNumber, sep="", collapse="") 
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/comparison/",picPrefix,"_",title,testData,".png",sep=""))
+  
+##############
+# stage III risk prediction on data compared to relapse yes/no
+##############
+library(survival)
+library(survminer)
+
+
+seed <- 7
+genPrep(seed)
+
+#check dfs probability stage II according to IIRiskGroup
+modelConfig <- myConfig[51,]
+expNumber <- paste(modelConfig$ExpNumber)
+testData <- "_test_all"
+
+testData <- "all"
+
+train <- paste("data/inputData/", "training_all",".csv", sep="", collapse="")
+test <- paste("data/inputData/","test_all",".csv", sep="", collapse="")
+train <- read.csv(train, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+test <- read.csv(test, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+
+
+
+curData <- rbind(train,test)
+
+curData <- filterForDeathByCancer(curData)
+curData <- filterbyGroups(curData, stage = "III")
+
+#fileToLoad <- paste("data/inputData/", modelConfig$inputFile,testData,".csv", sep="", collapse="")
+# curData <- read.csv(fileToLoad, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+modelToLoad <- paste("trainedModels/modelList_", modelConfig$inputFile, sep="", collapse="") 
+load(modelToLoad)
+modelToTest <- trainedModelsCaret$glmnet
+
+#modelConfig <- myConfig[1,]
+  prediction <- predict(modelToTest, curData)
+
+
+  # dataRiksGroupIII <- curData
+  # vec <- ! dataRiksGroupIII$IIRiskGroup %in% c("", "NA")
+  # dataRiksGroupIII <- dataRiksGroupIII[vec,]
+  # dataRiksGroupIII$IIRiskGroup <- as.factor(dataRiksGroupIII$IIRiskGroup)
+  
+  dataRiksGroupIII <- curData
+  #dataRiksGroupIII$DFS_Event <- sapply(curData$DFS_Event, function(x) { ifelse(x == "1 - yes", TRUE, FALSE)})
+  dataRiksGroupIII <- dataRiksGroupIII[,names(dataRiksGroupIII) %in% c('disease_free_survival_time', 'DFS_Event','IIIRiskGroup')]
+  prediction <- predict(modelToTest, curData)
+  dataRiksGroupIII <- na.omit(dataRiksGroupIII)
+  
+  
+  
+
+  #dataRiksGroupIII <- dataRiksGroupIII[order(dataRiksGroupIII[,c("IIRiskGroup")], decreasing = TRUE), ]
+
+  
+  
+  SurvObject <- with(dataRiksGroupIII, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ IIIRiskGroup,
+                           data = dataRiksGroupIII)
+  
+  
+  survDiff_II_dfs <- survdiff(SurvObject ~ IIIRiskGroup, data = dataRiksGroupIII)
+  
+  ggsurvplot(fit, conf.int = TRUE,title = "This is a test",legend.title = "relapse group: ", palette = c("#ca1e1e", "#66c73e", "#8eabfd"))
+  picPrefix <- paste("stageIII_surv_plot_dfs_exp_", expNumber, sep="", collapse="") 
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/comparison/",picPrefix,"_",title,testData,".png",sep=""))
+
+
+  
+  colsToSelect <- grepl("inputVar", colnames(modelConfig))
+  colsToSelect <- modelConfig[,colsToSelect]
+  colsToSelect <- sapply(colsToSelect, function(x) { as.character(x)})
+  colsToSelect <- unname(colsToSelect)
+  colsToSelect <- colsToSelect[! colsToSelect %in% c("", NA)]
+  tmpDataForIndices <- curData[, colsToSelect]
+  
+  allNAValIndices <- which(is.na(tmpDataForIndices), arr.ind=TRUE)
+  allNAValIndicesDistinct <- unique(allNAValIndices[,'row'])
+  curData <- curData[-allNAValIndicesDistinct,]
+  
+  
+  #check dfs probability stage II according to Model
+  dataRiksGroupIII <- curData
+  # vec <- ! dataRiksGroupIII$IIRiskGroup %in% c("", "NA")
+  # dataRiksGroupIII <- dataRiksGroupIII[vec,]
+  # dataRiksGroupIII$IIRiskGroup <- as.factor(dataRiksGroupIII$IIRiskGroup)
+  prediction <- predict(modelToTest, dataRiksGroupIII)
+  dataRiksGroupIII$relapsePrediction <- prediction
+  #dataRiksGroupIII <- curData
+  #dataRiksGroupIII$DFS_Event <- sapply(curData$DFS_Event, function(x) { ifelse(x == "1 - yes", TRUE, FALSE)})
+  dataRiksGroupIII <- dataRiksGroupIII[,names(dataRiksGroupIII) %in% c('disease_free_survival_time', 'DFS_Event', 'relapsePrediction')]
+  
+
+  
+  
+  
+  dataRiksGroupIII <- na.omit(dataRiksGroupIII)
+  
+  SurvObject <- with(dataRiksGroupIII, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ relapsePrediction,
+                           data = dataRiksGroupIII)
+  
+  
+  survDiff_II_dfs <- survdiff(SurvObject ~ relapsePrediction, data = dataRiksGroupIII)
+  
+  ggsurvplot(fit, conf.int = TRUE,legend.title = "relapse group: ", legend.labs = c("relapse = No", "reslapse = Yes"),palette = c("#8eabfd", "#ca1e1e") )
+
+  picPrefix <- paste("stageIII_surv_plot_dfs_predGrouping_exp_", expNumber, sep="", collapse="") 
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/comparison/",picPrefix,"_",title,testData,".png",sep=""))
+  
+
+```
+
+```{r evaluate risk groups}
+  
+  library(survival)
+  library(survminer)
+  , "#000099"
+  # draw survival curve for all patients
+
+  SurvObject <- with(data, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ 1, data =data)
+  ggsurvplot(fit, conf.int = TRUE, ylim = c(0.3, 1), color = "#000099", title= )
+
+  # check for disease free survival with stages
+
+
+
+
+
+
+
+
+  #check surv probability stage III
+  dataRiskGroupIII <- filterbyGroups(data, neoCT = "ALL", colRec = "ALL", stage = "III")
+  dataRiskGroupIII <- dataRiskGroupIII[,names(dataRiskGroupIII) %in% c('disease_free_survival_time', 'DFS_Event', 'IIIRiskGroup')]
+  dataRiskGroupIII <- na.omit(dataRiskGroupIII)
+  
+  
+  SurvObject <- with(dataRiskGroupIII, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ IIIRiskGroup,
+                           data = dataRiskGroupIII)
+  
+  survDiff_III_dfs <- survdiff(SurvObject ~ IIIRiskGroup,data = dataRiskGroupIII)
+  
+  ggsurvplot(fit, conf.int = TRUE, ylim = c(0.3, 1))
+  picPrefix <- "stageIII_surv_plot_dfs"
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/",picPrefix,"_",title,".png",sep=""))
+  
+  
+  
+  #check dfs probability stage II
+  dataRiskGroupII <- filterbyGroups(data, neoCT = "ALL", colRec = "ALL", stage = "II")
+  dataRiskGroupII <- dataRiskGroupII[,names(dataRiskGroupII) %in% c('disease_free_survival_time', 'DFS_Event','IIRiskGroup')]
+  dataRiskGroupII <- na.omit(dataRiskGroupII)
+  
+  
+  SurvObject <- with(dataRiskGroupII, Surv(disease_free_survival_time, DFS_Event == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ IIRiskGroup,
+                           data = dataRiskGroupII)
+  
+  
+  survDiff_II_dfs <- survdiff(SurvObject ~ IIRiskGroup, data = dataRiskGroupII)
+  
+  ggsurvplot(fit, conf.int = TRUE)
+  picPrefix <- "stageII_surv_plot_dfs"
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/",picPrefix,"_",title,".png",sep=""))
+
+
+  # check for survival with stages
+
+  #check surv probability stage III
+  dataRiskGroupIII <- filterbyGroups(data, neoCT = "ALL", colRec = "ALL", stage = "III")
+  dataRiskGroupIII <- dataRiskGroupIII[,names(dataRiskGroupIII) %in% c('patient_ueberlebenszeit', 'patient_lebensstatus', 'IIIRiskGroup')]
+  dataRiskGroupIII <- na.omit(dataRiskGroupIII)
+  
+  
+  SurvObject <- with(dataRiskGroupIII, Surv(patient_ueberlebenszeit, patient_lebensstatus == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ IIIRiskGroup,
+                           data = dataRiskGroupIII)
+  
+  survDiff_III_surv <- survdiff(SurvObject ~ IIIRiskGroup,data = dataRiskGroupIII)
+  
+  ggsurvplot(fit, conf.int = TRUE)
+  picPrefix <- "stageIII_surv_plot"
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/",picPrefix,"_",title,".png",sep=""))
+  
+  
+  
+  #check surv probability stage II
+  dataRiskGroupII <- filterbyGroups(data, neoCT = "ALL", colRec = "ALL", stage = "II")
+  dataRiskGroupII <- dataRiskGroupII[,names(dataRiskGroupII) %in% c('patient_ueberlebenszeit', 'patient_lebensstatus','IIRiskGroup')]
+  dataRiskGroupII <- na.omit(dataRiskGroupII)
+  
+  
+  SurvObject <- with(dataRiskGroupII, Surv(patient_ueberlebenszeit, patient_lebensstatus == TRUE))
+  
+  fit <- survival::survfit(SurvObject ~ IIRiskGroup,
+                           data = dataRiskGroupII)
+  
+  
+  survDiff_II_surv <- survdiff(SurvObject ~ IIRiskGroup, data = dataRiskGroupII)
+  
+  ggsurvplot(fit, conf.int = TRUE)
+  picPrefix <- "stageII_surv_plot"
+  title <- "Kaplan-Meier"
+  ggsave(paste(getwd(),"/diagrams/",picPrefix,"_",title,".png",sep=""))
+
+```
+
+
+``` { r build scatter plot for all models}
+alldataResultsfile <- "data/overallResults.csv"
+myResults <- read.csv(alldataResultsfile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+
+myScatter <- data.frame(rf_train= numeric(0), nnet_train= numeric(0), knn_train= numeric(0),glmnet_train= numeric(0),dnn_train= numeric(0), c50_train = numeric(0), rf_test= numeric(0), nnet_test= numeric(0), knn_test= numeric(0),glmnet_test= numeric(0),dnn_test= numeric(0), c50_test = numeric(0) )
+
+rf_train <- c()
+nnet_train <- c()
+knn_train <- c()
+glmnet_train <- c()
+dnn_train <- c()
+c50_train <- c()
+rf_test <- c()
+nnet_test <- c()
+knn_test <- c()
+glmnet_test <- c()
+dnn_test <- c()
+c50_test <- c()
+
+
+
+for(i in 1:nrow(myResults)){
+
+  curRow <- myResults[i,]
+  curVal <- curRow$Accuracy
+  if(curRow$expNumber != "f1"){
+    if(curRow$dataSetCol == "training") {
+    
+      if(curRow$Model == "rf" ){
+        rf_train <- c(rf_train, curVal)
+      }
+    
+      if(curRow$Model == "nnet" ){
+        nnet_train <- c(nnet_train, curVal)
+      }
+      
+      if(curRow$Model == "knn" ){
+        knn_train <- c(knn_train, curVal)
+      }
+      
+      if(curRow$Model == "glmnet" && ! is.na(curVal) ){
+        glmnet_train <- c(glmnet_train, curVal)
+      }
+      
+      if(curRow$Model == "dnn" ){
+        dnn_train <- c(dnn_train, curVal)
+      }
+      
+      if(curRow$Model == "C5.0" ){
+        c50_train <- c(c50_train, curVal)
+      }
+    } else {
+    
+      if(curRow$Model == "rf" ){
+        rf_test <- c(rf_test, curVal)
+      }
+    
+      if(curRow$Model == "nnet" ){
+        nnet_test <- c(nnet_test, curVal)
+      }
+      
+      if(curRow$Model == "knn" ){
+        knn_test <- c(knn_test, curVal)
+      }
+      
+      if(curRow$Model == "glmnet" && ! is.na(curVal) ){
+        glmnet_test <- c(glmnet_test, curVal)
+      }
+      
+      if(curRow$Model == "dnn" ){
+        dnn_test <- c(dnn_test, curVal)
+      }
+      
+      if(curRow$Model == "C5.0" ){
+        c50_test <- c(c50_test, curVal)
+      }
+    }
+  
+  }
+
+}
+
+
+newVec <- c()
+for(i in 1:nrow(myResults)){
+
+    curRow <- myResults[i,]
+    newVec <- c(newVec, paste(curRow$dataSetCol,"_", curRow$Model, collapse ="", sep=""))
+}
+
+myResults$modelDataSet <- newVec
+
+
+myScatter <- c(rf_train, nnet_train, knn_train, glment_train, dnn_train, c50_train)
+
+
+
+myScatter <- cbind(rf_train, nnet_train, knn_train, dnn_train, glmnet_train, rf_test, nnet_test, knn_test, dnn_test, glmnet_test )
+
+
+  
+
+myScatter <- myResults[myResults$expPredictionGroup %in%c("Tumor Stage", "RCT TR (YesNo)", "RCT TR", "Risk group SIII" , "Risk group SII", "Relapse", "Relapse SIII", "Relapse SII", "Relapse SII - ROC", "Relapse SIII - ROC"), ]
+
+ggplot(myScatter, aes(x=expNumber, y=Accuracy, color=modelDataSet)) + geom_point() +
+    scale_shape_manual(values=c(1,2)) + theme_bw()
+ 
+title <- "allAccModelsCompByExpNumber"
+ggsave(paste(getwd(),"/diagrams/compAllModels/",title,".png",sep=""))
+
+ggplot(myScatter, aes(x=Model, y=Accuracy, color=dataSetCol)) + geom_point() +
+scale_shape_manual(values=c(1,2)) + theme_bw()
+    
+title <- "allAccModelsCompByModel"
+ggsave(paste(getwd(),"/diagrams/compAllModels/",title,".png",sep=""))
+
+
+myScatter <- myResults[myResults$expPredictionGroup %in%c("DFS","survival", "DFS SIII", "DFS SII"), ]
+ggplot(myScatter, aes(x=expNumber, y=Cindex, color=modelDataSet)) + geom_point() +
+    scale_shape_manual(values=c(1,2)) + theme_bw()
+
+title <- "allSurvModelsCompByExpNumber"
+ggsave(paste(getwd(),"/diagrams/compAllModels/",title,".png",sep=""))
+    
+ggplot(myScatter, aes(x=Model, y=Cindex, color=dataSetCol)) + geom_point() +
+scale_shape_manual(values=c(1,2)) + theme_bw()
+
+title <- "allSurvModelsCompByModel"
+ggsave(paste(getwd(),"/diagrams/compAllModels/",title,".png",sep=""))
+
+
+myScatter <- myResults[myResults$expPredictionGroup %in%c("Tumor Stage", "RCT TR (YesNo)", "RCT TR", "Risk group SIII" , "Risk group SII", "Relapse", "Relapse SIII", "Relapse SII", "Relapse SII - ROC", "Relapse SIII - ROC"), ]
+temp = aggregate(list(Accuracy = myScatter$Accuracy), list(model_data = myScatter$modelDataSet), mean)
+temp$Model <- c("C5.0","dnn","glmnet","knn", "nnet", "rf","C5.0","dnn","glmnet","knn", "nnet", "rf")
+temp$dataSet <- c("test","test","test","test","test","test","training","training","training","training","training","training")
+
+ggplot(temp, aes(x=Model, y=Accuracy, color=dataSet)) + geom_point(size=4) + scale_color_manual(values=c("#0099CC", "#000099")) +
+theme_bw() +
+    theme(legend.text=element_text(size=14), legend.title=element_text(size=15), axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"),)
+    
+title <- "allAccModelsCompByModelAvgAccuracies"
+ggsave(paste(getwd(),"/diagrams/compAllModels/",title,".png",sep=""))
+
+
+
+myScatter <- myResults[myResults$expPredictionGroup %in%c("DFS","survival", "DFS SIII", "DFS SII"), ]
+temp = aggregate(list(Cindex = myScatter$Cindex), list(model_data = myScatter$modelDataSet), mean)
+temp$Model <- c("coxph", "glmnet","rfsrc","coxph","glmnet","rfsrc")
+temp$dataSet <- c("test","test","test","training","training","training")
+
+ggplot(temp, aes(x=Model, y=Cindex, color=dataSet)) + geom_point(size=4) + scale_color_manual(values=c("#0099CC", "#000099")) +
+theme_bw() +
+    theme(legend.text=element_text(size=14), legend.title=element_text(size=15), axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"),)
+    
+title <- "allSurvModelsCompByModelAvgAccuracies"
+ggsave(paste(getwd(),"/diagrams/compAllModels/",title,".png",sep=""))
+
+```
+
+
+```{R script for Dennis to evaluate the models}
+
+
+### load general implementation files and prepare data
+source("DataPreparation.R")
+source("trainingModels.R")
+source("testAndEvaluate.R")
+source("plotResults.R")
+source("modelimplementation.R")
+
+dataFile <- "data/2017-01-09_polyprobe_data_all.csv"
+blindData <- read.csv(dataFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+configFile <- "modelConfiguration.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+
+# build csv Files
+
+## basic data changes
+blindData$DFS_Event <- sapply(blindData$DFS_Event, function(x) { ifelse(x == "1 (yes)", TRUE, FALSE)})
+blindData$patient_lebensstatus <- sapply(blindData$patient_lebensstatus, function(x) { ifelse(x == "2 (dead)", TRUE, FALSE)})
+blindData <- createRiskGroupingCols(blindData)
+
+
+
+experimentsToRun <- c(54:61)
+
+
+for(i in experimentsToRun) {
+
+ seed <- 7
+  genPrep(seed)
+  modelConfig <- myConfig[i,]   
+  
+  expNumber <- modelConfig$ExpNumber
+  expPrediction <- modelConfig$prediction
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  expMetric <- paste(modelConfig$metric)
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  
+  # load training file for data and adjust levels of blindData to levels of training data
+  file <- paste("data/inputData/",modelConfig$inputFile, sep="",collapse = "")
+  fileTraining <- paste(file, "_train.csv", sep="",collapse = "")
+  training <- read.csv(fileTraining, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  for(colname in colnames(training)){
+    print(colname)
+    levels(blindData[,c(colname)]) <- levels(training[, c(colname)])
+  }
+  
+  # load model
+  modelToLoad <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  load(modelToLoad)
+  
+  
+  if(packType == "caret" ) {
+  # train and evaluate caret models
+  #Begin Training and evaluating Caret Package type models
+  
+  predictTrainCaretModels <- createPredictModels(blindData, trainedModelsCaret)
+
+  
+  evalMetric <- "Accuracy"
+  evalCaretModelsBlindData <- evalModelListsAccsDf(predictTrainCaretModels, blindData, outcomeVar, evalMetric = evalMetric)
+  
+  # get and print plots
+  
+  # modelSpecSensTrain <- getSensAndSpecForModels(predictTrainCaretModels, training, outcomeVar)
+  # modelSpecSensTest <- getSensAndSpecForModels(predictTestCaretModels, testData, outcomeVar)
+  
+  #getCompPlotForMetric(resampleCaret, metric = "Accuracy", packType = "caret", title = "Overall Accuracy Resampling", expName = expName)
+  
+  resultsCsv <- "data/resultsOnBlinData.csv"
+  
+  addResultsToOverallResultsCsv(resultsCsv, evalCaretModelsBlindData, expNumber, expName,"blindata", prediction = expPrediction )
+
+  # resultsCsvSpecSens <- "data/overallResultsSpecSens.csv"
+  # addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTrain, expNumber, expName,"training", prediction = expPrediction )
+  # addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTest,expNumber, expName,"test", prediction = expPrediction)
+  
+  
+  } else if (packType == "mlr"){
+  
+  predictBlindMlrModels <- createPredictModels(blindData,trainedModelsMlr, packType = "mlr")
+  evalMetric <- cindex
+  
+  source("testAndEvaluate.R")
+  evalMlrModelsBlindData <- evalModelListsAccsDf(predictBlindMlrModels, blindData, packType = "mlr", evalMetric = evalMetric)
+  
+  
+  resultsCsv <- "data/resultsOnBlinData.csv"
+  addResultsToOverallResultsCsv(resultsCsv, evalMlrModelsBlindData, expNumber, expName,"blindata", evalMetric = "cindex", prediction = expPrediction)
+  
+  } 
+}
+
+

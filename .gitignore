@@ -1,0 +1,11 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/
+diagrams/
+archive/
+analysis/2017-01-09_polyprobe_data_all_analysis_dataset.csv
+analysis/2017-01-09_polyprobe_data_all_analysis_dataset.xlsx
+analysis/2017-01-09_polyprobe_data_all.csv
+analysis/2017-01-09_polyprobe_data_all.xlsx

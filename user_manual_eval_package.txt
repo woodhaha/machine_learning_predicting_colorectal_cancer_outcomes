@@ -1,0 +1,23 @@
+To evaluate the models do the following:
+
+1.	unzip the package into a folder of your choice
+2.	navigate to the directory BA_evaluation_package 
+
+##any directories given from here on are based on the current directory##
+
+3. add your blind test data to the direcotry data and name it myBlindTestData.csv  (the file there will be overwritten)
+4. open the file Evaluation.rmd in Rstudio
+5. Execute the part "prepare the data for evaluation"
+	a. check that the direcotry data/blindData now contains a file for each experiment that will be run
+6. Execute the part "test all models"
+7. The file data/resultsOnBlindData should now contain all the results from all of the experiments that were run
+
+
+other useful information:
+a. all the experiments (model configurations) that can be run can be found and configured in the file "modelConfiguration.csv"
+b. the models that were build and can be tested are located under trainedModels
+c. the vector "experimentsToRun" in line 46 configures the models that are run on the data
+d. some experiments are excluded as they are likely to fail due to level differences in data that is most likely provided
+e. the results that were achieved on training and test data that was not withheld is found under data/overallResults_data_JulianGruendner.csv
+
+

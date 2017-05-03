@@ -1,0 +1,15 @@
+f2
+v971_1_mnppp01_33_patho_beurt_mesokolon
+v971_1_mnppp01_33_patho_a_rectalissup
+
+f3
+v971_1_mnppp01_33_patho_beurt_mesokolon
+v971_1_mnppp01_31_op_mesorektumex
+
+
+STAGE II
+39	Predicting Relapse SII using Genexpression
+for nnet comparison to stage 2 cancer
+
+STAGE III
+try 49 for nnet - comparison to stage 3 cancer

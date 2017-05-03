@@ -1,0 +1,137 @@
+---
+title: "ImplementationColRecCancer"
+author: "Julian Gruendner"
+date: "1 Februar 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{R prepare the data for evaluation}
+### load general implementation files and prepare data
+source("DataPreparation.R")
+source("trainingModels.R")
+source("testAndEvaluate.R")
+source("plotResults.R")
+seed <- 7
+genPrep(seed)
+configFile <- "modelConfiguration.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+dataFileBlindData <- "data/myBlindTestData.csv"
+data <- read.csv(dataFileBlindData, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+data$DFS_Event <- sapply(data$DFS_Event, function(x) { ifelse(x == "1 (yes)", TRUE, FALSE)})
+data$patient_lebensstatus <- sapply(data$patient_lebensstatus, function(x) { ifelse(x == "2 (dead)", TRUE, FALSE)})
+data <- createRiskGroupingCols(data)
+experimentsToRun <- c(1:75)
+buildDataFilesForBlindDataTest(myConfig, experimentsToRun)
+
+```
+
+```{R test all models}
+
+
+### load general implementation files and prepare data
+source("DataPreparation.R")
+source("trainingModels.R")
+source("testAndEvaluate.R")
+source("plotResults.R")
+
+configFile <- "modelConfiguration.csv"
+myConfig <- read.csv(configFile, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+
+#missing:
+# 30, 66
+#70:75  - levels probably different
+experimentsToRun <- c(1:29, 31:65, 67:69)
+
+for(i in experimentsToRun) {
+
+  seed <- 7
+  genPrep(seed)
+  modelConfig <- myConfig[i,]   
+  
+  expNumber <- modelConfig$ExpNumber
+  expPrediction <- modelConfig$prediction
+  expName <- paste ("Predicting", modelConfig$prediction , "using", modelConfig$Predictors, sep = " ", collapse = NULL)
+  packType <- paste(modelConfig$packageUsed)
+  expMetric <- paste(modelConfig$metric)
+  outcomeVar1 <- paste(modelConfig$inputVar_outcomeVar1)
+  outcomeVar2 <- paste(modelConfig$inputVar_outcomeVar2)
+  
+  if(outcomeVar2 != ""){
+    outcomeVar <- c(outcomeVar1,outcomeVar2)
+  } else {
+    outcomeVar <- c(outcomeVar1)
+  }
+  
+  #reload blindData every time
+  dataFileBlindData <- paste("data/blindData/",modelConfig$inputFile,".csv", sep="",collapse = "")
+  blindData <- read.csv(dataFileBlindData, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  #blindData$DFS_Event <- sapply(blindData$DFS_Event, function(x) { ifelse(x == "1 (yes)", TRUE, FALSE)})
+  #blindData$patient_lebensstatus <- sapply(blindData$patient_lebensstatus, function(x) { ifelse(x == "2 (dead)", TRUE, FALSE)})
+  #blindData <- createRiskGroupingCols(blindData)
+  
+  
+  # load training file for data and adjust levels of blindData to levels of training data
+  file <- paste("data/inputData/",modelConfig$inputFile, sep="",collapse = "")
+  fileTraining <- paste(file, "_train.csv", sep="",collapse = "")
+  fileTest <- paste(file, "_test.csv", sep="",collapse = "")
+  training <- read.csv(fileTraining, header = TRUE, sep = ";", quote = "\"",dec = ".", fill = TRUE, comment.char = "")
+  if(! expNumber %in% c(23,43,45,47,49,51,53:61, 65, "f2")) {
+    for(colname in colnames(training) ){
+      if(colname != "DFS_Event" && colname != "v971_1_mnppp01_33_patho_am_primaertumor" ){
+        levels(blindData[,c(colname)]) <- levels(training[, c(colname)])
+      }
+    }
+  }
+  
+  # load model
+  modelToLoad <- paste("trainedModels/modelList_exp",expNumber, sep = "",collapse ="")
+  load(modelToLoad)
+  
+  
+  if(packType == "caret" ) {
+  # train and evaluate caret models
+  #Begin Training and evaluating Caret Package type models
+  
+  predictTrainCaretModels <- createPredictModels(blindData, trainedModelsCaret)
+
+  
+  evalMetric <- "Accuracy"
+  evalCaretModelsBlindData <- evalModelListsAccsDf(predictTrainCaretModels, blindData, outcomeVar, evalMetric = evalMetric)
+  
+  # get and print plots
+  
+  # modelSpecSensTrain <- getSensAndSpecForModels(predictTrainCaretModels, training, outcomeVar)
+  # modelSpecSensTest <- getSensAndSpecForModels(predictTestCaretModels, testData, outcomeVar)
+  
+  #getCompPlotForMetric(resampleCaret, metric = "Accuracy", packType = "caret", title = "Overall Accuracy Resampling", expName = expName)
+  
+  resultsCsv <- "data/resultsOnBlindData.csv"
+  
+  addResultsToOverallResultsCsv(resultsCsv, evalCaretModelsBlindData, expNumber, expName,"blindata", prediction = expPrediction )
+
+  # resultsCsvSpecSens <- "data/overallResultsSpecSens.csv"
+  # addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTrain, expNumber, expName,"training", prediction = expPrediction )
+  # addResultsToOverallResultsSpecSensCsv(resultsCsvSpecSens, modelSpecSensTest,expNumber, expName,"test", prediction = expPrediction)
+  
+  
+  } else if (packType == "mlr"){
+  
+  predictBlindMlrModels <- createPredictModels(blindData,trainedModelsMlr, packType = "mlr")
+  
+  evalMetric <- cindex
+  
+  source("testAndEvaluate.R")
+  evalMlrModelsBlindData <- evalModelListsAccsDf(predictBlindMlrModels, blindData, packType = "mlr", evalMetric = evalMetric)
+  
+  resultsCsv <- "data/resultsOnBlindData.csv"
+  addResultsToOverallResultsCsv(resultsCsv, evalMlrModelsBlindData, expNumber, expName,"blindata", evalMetric = "cindex", prediction = expPrediction)
+  
+  } 
+}
+
+
+```
+
